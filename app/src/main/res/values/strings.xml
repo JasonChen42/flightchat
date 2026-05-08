@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">FlightChat</string>
+    <string name="mode_server">启动热点服务器</string>
+    <string name="mode_client">自动连接服务器</string>
+    <string name="send_message">发送</string>
+    <string name="message_hint">输入消息...</string>
+    <string name="users_online">在线用户</string>
+    <string name="chat_room">聊天室</string>
+    <string name="connecting">连接中...</string>
+    <string name="connected">已连接</string>
+    <string name="disconnected">已断开</string>
+    <string name="error_connection">连接失败</string>
+    <string name="nickname_hint">输入昵称</string>
+    <string name="confirm">确认</string>
+    <string name="cancel">取消</string>
+</resources>

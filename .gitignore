@@ -1,0 +1,27 @@
+# Local workspace instructions and device notes
+AGENTS.md
+
+# Gradle / Android build outputs
+.gradle/
+build/
+**/build/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Android Studio / IntelliJ local state
+.idea/
+*.iml
+
+# Local SDK and machine-specific configuration
+local.properties
+
+# Signing keys and generated artifacts
+*.jks
+*.keystore
+*.apk
+*.aab
+
+# OS and logs
+.DS_Store
+*.log
