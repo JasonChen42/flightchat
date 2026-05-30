@@ -16,11 +16,16 @@ import androidx.compose.ui.unit.sp
  */
 @Composable
 fun StartScreen(
+    initialNickname: String = "",
+    initialServerHost: String = "",
+    canQuickEnter: Boolean = false,
+    quickEnterIsHost: Boolean = false,
+    onQuickEnter: () -> Unit = {},
     onHostMode: (String) -> Unit,
     onClientMode: (String, String) -> Unit
 ) {
-    var nicknameInput by remember { mutableStateOf("") }
-    var serverHostInput by remember { mutableStateOf("") }
+    var nicknameInput by remember(initialNickname) { mutableStateOf(initialNickname) }
+    var serverHostInput by remember(initialServerHost) { mutableStateOf(initialServerHost) }
     
     Column(
         modifier = Modifier
@@ -45,6 +50,26 @@ fun StartScreen(
             color = Color.Gray,
             modifier = Modifier.padding(bottom = 32.dp)
         )
+
+        if (canQuickEnter) {
+            Button(
+                onClick = onQuickEnter,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(50.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFF2E7D32)
+                )
+            ) {
+                Text(
+                    text = if (quickEnterIsHost) "一键恢复主机" else "一键进入聊天室",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+        }
         
         // 昵称输入
         TextField(

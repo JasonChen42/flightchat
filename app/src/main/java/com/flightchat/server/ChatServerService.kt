@@ -9,6 +9,7 @@ import com.flightchat.database.ChatDatabase
 import com.flightchat.keepalive.BackgroundKeepAlive
 import com.flightchat.model.ChatMessage
 import com.flightchat.model.User
+import com.flightchat.network.ChatDefaults
 import com.flightchat.network.MessageProtocol
 import com.flightchat.notification.ChatNotificationManager
 import kotlinx.coroutines.*
@@ -20,8 +21,9 @@ import java.util.concurrent.ConcurrentHashMap
 
 class ChatServerService : Service() {
     
-    private var serverPort = 5555
+    private var serverPort = ChatDefaults.DEFAULT_SERVER_PORT
     private var serverSocket: ServerSocket? = null
+    private var serverJob: Job? = null
     private val clientHandlers = ConcurrentHashMap<String, ClientHandler>()
     private val onlineUsers = ConcurrentHashMap<String, User>()
     private val scope = CoroutineScope(Dispatchers.IO + Job())
@@ -33,6 +35,7 @@ class ChatServerService : Service() {
     private var hostNickname: String = "Host"
     private var isServerRunning = false
     private var foregroundStarted = false
+    private var stoppingServer = false
     private var connectionCallback: ((Boolean) -> Unit)? = null
 
     inner class LocalBinder : Binder() {
@@ -43,7 +46,12 @@ class ChatServerService : Service() {
         Log.d(TAG, "Server Service started")
         val userId = intent?.getStringExtra("userId").orEmpty()
         val nickname = intent?.getStringExtra("nickname").orEmpty()
-        val port = intent?.getIntExtra("serverPort", 5555) ?: 5555
+        val port = ChatDefaults.normalizeServerPort(
+            intent?.getIntExtra(
+                "serverPort",
+                ChatDefaults.DEFAULT_SERVER_PORT
+            ) ?: ChatDefaults.DEFAULT_SERVER_PORT
+        )
         if (userId.isNotBlank() && nickname.isNotBlank()) {
             ensureForeground()
             keepAlive.acquire()
@@ -57,7 +65,14 @@ class ChatServerService : Service() {
         callback?.invoke(isServerRunning)
     }
 
-    fun startAsHost(userId: String, nickname: String, port: Int = 5555) {
+    fun startAsHost(
+        userId: String,
+        nickname: String,
+        port: Int = ChatDefaults.DEFAULT_SERVER_PORT
+    ) {
+        if (isServerRunning && serverPort != port) {
+            stopServerSocket()
+        }
         hostUserId = userId
         hostNickname = nickname
         serverPort = port
@@ -79,19 +94,21 @@ class ChatServerService : Service() {
     }
     
     private fun startServer() {
-        if (isServerRunning) return
-        isServerRunning = true
-        connectionCallback?.invoke(true)
-        scope.launch {
+        if (isServerRunning || serverJob?.isActive == true) return
+        stoppingServer = false
+        serverJob = scope.launch {
             try {
-                serverSocket = ServerSocket().apply {
+                val socket = ServerSocket().apply {
                     reuseAddress = true
                     bind(InetSocketAddress("0.0.0.0", serverPort))
                 }
+                serverSocket = socket
+                isServerRunning = true
+                connectionCallback?.invoke(true)
                 Log.d(TAG, "Server started on port $serverPort")
                 
                 while (scope.isActive) {
-                    val clientSocket = serverSocket?.accept()
+                    val clientSocket = socket.accept()
                     if (clientSocket != null) {
                         Log.d(TAG, "Client connected: ${clientSocket.inetAddress.hostAddress}")
                         val handler = ClientHandler(clientSocket, this@ChatServerService)
@@ -101,11 +118,26 @@ class ChatServerService : Service() {
                     }
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Server error: ${e.message}")
+                if (scope.isActive && !stoppingServer) {
+                    Log.e(TAG, "Server error: ${e.message}", e)
+                }
+            } finally {
+                serverSocket?.close()
+                serverSocket = null
                 isServerRunning = false
                 connectionCallback?.invoke(false)
             }
         }
+    }
+
+    private fun stopServerSocket() {
+        stoppingServer = true
+        serverJob?.cancel()
+        serverSocket?.close()
+        serverSocket = null
+        serverJob = null
+        isServerRunning = false
+        connectionCallback?.invoke(false)
     }
 
     fun sendHostMessage(content: String, to: String = "all") {
@@ -227,7 +259,7 @@ class ChatServerService : Service() {
     
     override fun onDestroy() {
         Log.d(TAG, "Server destroyed")
-        serverSocket?.close()
+        stopServerSocket()
         clientHandlers.values.forEach { it.close() }
         keepAlive.release()
         stopForeground(STOP_FOREGROUND_REMOVE)

@@ -13,6 +13,7 @@ import com.flightchat.database.ChatDatabase
 import com.flightchat.keepalive.BackgroundKeepAlive
 import com.flightchat.model.ChatMessage
 import com.flightchat.model.User
+import com.flightchat.network.ChatDefaults
 import com.flightchat.network.MessageProtocol
 import com.flightchat.notification.ChatNotificationManager
 import kotlinx.coroutines.*
@@ -48,7 +49,7 @@ class ChatClientService : Service() {
     private var nickname: String = ""
     private var serverHost: String = AUTO_SERVER_HOST
     private var autoConnectMode = true
-    private var serverPort: Int = 5555
+    private var serverPort: Int = ChatDefaults.DEFAULT_SERVER_PORT
     
     private var messageCallback: ((ChatMessage) -> Unit)? = null
     private var connectionCallback: ((Boolean) -> Unit)? = null
@@ -66,7 +67,12 @@ class ChatClientService : Service() {
         nickname = intent?.getStringExtra("nickname") ?: "Anonymous"
         serverHost = (intent?.getStringExtra("serverHost") ?: AUTO_SERVER_HOST).trim()
         autoConnectMode = serverHost.isAutoHost()
-        serverPort = intent?.getIntExtra("serverPort", 5555) ?: 5555
+        serverPort = ChatDefaults.normalizeServerPort(
+            intent?.getIntExtra(
+                "serverPort",
+                ChatDefaults.DEFAULT_SERVER_PORT
+            ) ?: ChatDefaults.DEFAULT_SERVER_PORT
+        )
         ensureForeground()
         keepAlive.acquire()
         

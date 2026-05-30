@@ -25,11 +25,14 @@ import androidx.compose.ui.graphics.Color
 import com.flightchat.client.ChatClientService
 import com.flightchat.database.ChatDatabase
 import com.flightchat.model.AppState
+import com.flightchat.model.AppSettings
 import com.flightchat.model.User
+import com.flightchat.network.ChatDefaults
 import com.flightchat.notification.ChatNotificationManager
 import com.flightchat.server.ChatServerService
 import com.flightchat.ui.ChatScreen
 import com.flightchat.ui.StartScreen
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     
@@ -101,13 +104,14 @@ class MainActivity : ComponentActivity() {
         
         setContent {
             val initialSession = remember { restoredSession }
+            var savedSettings by remember { mutableStateOf<AppSettings?>(null) }
             var appState by remember {
                 mutableStateOf(
                     AppState(
                         isHost = initialSession?.isHost ?: false,
                         currentUserId = initialSession?.userId ?: "user_${System.currentTimeMillis()}",
                         currentNickname = initialSession?.nickname.orEmpty(),
-                        serverPort = initialSession?.serverPort ?: 5555,
+                        serverPort = initialSession?.serverPort ?: ChatDefaults.DEFAULT_SERVER_PORT,
                         serverHost = initialSession?.serverHost ?: ChatClientService.AUTO_SERVER_HOST
                     )
                 )
@@ -117,6 +121,25 @@ class MainActivity : ComponentActivity() {
             var users by remember { mutableStateOf(emptyList<User>()) }
             var currentScreen by remember {
                 mutableStateOf(if (initialSession != null) "chat" else "start")
+            }
+            val uiScope = rememberCoroutineScope()
+
+            LaunchedEffect(Unit) {
+                val storedSettings = database.appSettingsDao().getSettings()
+                val settings = storedSettings ?: readSavedProfileFromSessionPrefs()
+                if (storedSettings == null && settings != null) {
+                    database.appSettingsDao().save(settings)
+                }
+                savedSettings = settings
+                if (initialSession == null && settings != null) {
+                    appState = appState.copy(
+                        isHost = settings.isHost,
+                        currentUserId = settings.userId.ifBlank { appState.currentUserId },
+                        currentNickname = settings.nickname,
+                        serverHost = settings.serverHost,
+                        serverPort = ChatDefaults.normalizeServerPort(settings.serverPort)
+                    )
+                }
             }
 
             DisposableEffect(Unit) {
@@ -163,46 +186,128 @@ class MainActivity : ComponentActivity() {
                 when (currentScreen) {
                     "start" -> {
                         StartScreen(
+                            initialNickname = appState.currentNickname,
+                            initialServerHost = appState.serverHost
+                                .takeUnless { it == ChatClientService.AUTO_SERVER_HOST }
+                                .orEmpty(),
+                            canQuickEnter = appState.currentNickname.isNotBlank(),
+                            quickEnterIsHost = appState.isHost,
+                            onQuickEnter = {
+                                val nickname = appState.currentNickname.trim()
+                                if (nickname.isNotBlank()) {
+                                    val userId = appState.currentUserId.ifBlank {
+                                        "user_${System.currentTimeMillis()}"
+                                    }
+                                    val serverPort = ChatDefaults.normalizeServerPort(appState.serverPort)
+                                    val serverHost = appState.serverHost.trim().ifBlank {
+                                        ChatClientService.AUTO_SERVER_HOST
+                                    }
+                                    val isHost = appState.isHost
+                                    appState = appState.copy(
+                                        currentUserId = userId,
+                                        currentNickname = nickname,
+                                        serverHost = serverHost,
+                                        serverPort = serverPort,
+                                        isConnected = false
+                                    )
+                                    saveSession(
+                                        isHost = isHost,
+                                        userId = userId,
+                                        nickname = nickname,
+                                        serverHost = serverHost,
+                                        serverPort = serverPort
+                                    )
+                                    uiScope.launch {
+                                        saveAppSettings(
+                                            isHost = isHost,
+                                            userId = userId,
+                                            nickname = nickname,
+                                            serverHost = serverHost,
+                                            serverPort = serverPort
+                                        )
+                                    }
+                                    requestIgnoreBatteryOptimizationsIfNeeded()
+                                    if (isHost) {
+                                        startServerService(userId, nickname, serverPort)
+                                    } else {
+                                        startClientService(userId, nickname, serverHost, serverPort)
+                                    }
+                                    currentScreen = "chat"
+                                }
+                            },
                             onHostMode = { nickname ->
+                                val normalizedNickname = nickname.trim()
+                                val userId = appState.currentUserId.ifBlank {
+                                    "user_${System.currentTimeMillis()}"
+                                }
+                                val serverPort = ChatDefaults.normalizeServerPort(appState.serverPort)
                                 appState = appState.copy(
                                     isHost = true,
-                                    currentNickname = nickname,
+                                    currentUserId = userId,
+                                    currentNickname = normalizedNickname,
+                                    serverHost = ChatClientService.AUTO_SERVER_HOST,
+                                    serverPort = serverPort,
                                     isConnected = false
                                 )
                                 saveSession(
                                     isHost = true,
-                                    userId = appState.currentUserId,
-                                    nickname = nickname,
+                                    userId = userId,
+                                    nickname = normalizedNickname,
                                     serverHost = ChatClientService.AUTO_SERVER_HOST,
-                                    serverPort = appState.serverPort
+                                    serverPort = serverPort
                                 )
+                                uiScope.launch {
+                                    saveAppSettings(
+                                        isHost = true,
+                                        userId = userId,
+                                        nickname = normalizedNickname,
+                                        serverHost = ChatClientService.AUTO_SERVER_HOST,
+                                        serverPort = serverPort
+                                    )
+                                }
                                 requestIgnoreBatteryOptimizationsIfNeeded()
-                                startServerService(appState.currentUserId, nickname, appState.serverPort)
+                                startServerService(userId, normalizedNickname, serverPort)
                                 currentScreen = "chat"
                             },
                             onClientMode = { nickname, hostInput ->
+                                val normalizedNickname = nickname.trim()
+                                val userId = appState.currentUserId.ifBlank {
+                                    "user_${System.currentTimeMillis()}"
+                                }
                                 val resolvedHost = hostInput.trim().ifBlank {
                                     ChatClientService.AUTO_SERVER_HOST
                                 }
+                                val serverPort = ChatDefaults.normalizeServerPort(appState.serverPort)
                                 appState = appState.copy(
                                     isHost = false,
-                                    currentNickname = nickname,
+                                    currentUserId = userId,
+                                    currentNickname = normalizedNickname,
                                     serverHost = resolvedHost,
+                                    serverPort = serverPort,
                                     isConnected = false
                                 )
                                 saveSession(
                                     isHost = false,
-                                    userId = appState.currentUserId,
-                                    nickname = nickname,
+                                    userId = userId,
+                                    nickname = normalizedNickname,
                                     serverHost = resolvedHost,
-                                    serverPort = appState.serverPort
+                                    serverPort = serverPort
                                 )
+                                uiScope.launch {
+                                    saveAppSettings(
+                                        isHost = false,
+                                        userId = userId,
+                                        nickname = normalizedNickname,
+                                        serverHost = resolvedHost,
+                                        serverPort = serverPort
+                                    )
+                                }
                                 requestIgnoreBatteryOptimizationsIfNeeded()
                                 startClientService(
-                                    appState.currentUserId,
-                                    nickname,
+                                    userId,
+                                    normalizedNickname,
                                     resolvedHost,
-                                    appState.serverPort
+                                    serverPort
                                 )
                                 currentScreen = "chat"
                             }
@@ -230,8 +335,9 @@ class MainActivity : ComponentActivity() {
                                 appState = appState.copy(
                                     isHost = false,
                                     isConnected = false,
-                                    currentNickname = "",
-                                    currentUserId = "user_${System.currentTimeMillis()}"
+                                    currentUserId = appState.currentUserId.ifBlank {
+                                        "user_${System.currentTimeMillis()}"
+                                    }
                                 )
                                 currentScreen = "start"
                             },
@@ -384,7 +490,7 @@ class MainActivity : ComponentActivity() {
                     userId = "user_${System.currentTimeMillis()}",
                     nickname = "",
                     serverHost = ChatClientService.AUTO_SERVER_HOST,
-                    serverPort = 5555
+                    serverPort = ChatDefaults.DEFAULT_SERVER_PORT
                 )
             clientRunning -> saved?.takeIf { !it.isHost }
                 ?: PersistedSession(
@@ -392,7 +498,7 @@ class MainActivity : ComponentActivity() {
                     userId = "user_${System.currentTimeMillis()}",
                     nickname = "",
                     serverHost = ChatClientService.AUTO_SERVER_HOST,
-                    serverPort = 5555
+                    serverPort = ChatDefaults.DEFAULT_SERVER_PORT
                 )
             else -> {
                 clearPersistedSession()
@@ -418,6 +524,23 @@ class MainActivity : ComponentActivity() {
             .apply()
     }
 
+    private suspend fun saveAppSettings(
+        isHost: Boolean,
+        userId: String,
+        nickname: String,
+        serverHost: String,
+        serverPort: Int
+    ) {
+        val settings = AppSettings(
+            userId = userId,
+            nickname = nickname,
+            isHost = isHost,
+            serverHost = serverHost,
+            serverPort = ChatDefaults.normalizeServerPort(serverPort)
+        )
+        database.appSettingsDao().save(settings)
+    }
+
     private fun readPersistedSession(): PersistedSession? {
         if (!sessionPrefs.getBoolean(KEY_SESSION_ACTIVE, false)) return null
         val isHost = sessionPrefs.getBoolean(KEY_IS_HOST, false)
@@ -427,7 +550,12 @@ class MainActivity : ComponentActivity() {
             KEY_SERVER_HOST,
             ChatClientService.AUTO_SERVER_HOST
         ) ?: ChatClientService.AUTO_SERVER_HOST
-        val serverPort = sessionPrefs.getInt(KEY_SERVER_PORT, 5555)
+        val serverPort = ChatDefaults.normalizeServerPort(
+            sessionPrefs.getInt(
+                KEY_SERVER_PORT,
+                ChatDefaults.DEFAULT_SERVER_PORT
+            )
+        )
 
         return PersistedSession(
             isHost = isHost,
@@ -438,8 +566,34 @@ class MainActivity : ComponentActivity() {
         )
     }
 
+    private fun readSavedProfileFromSessionPrefs(): AppSettings? {
+        val nickname = sessionPrefs.getString(KEY_NICKNAME, null).orEmpty()
+        if (nickname.isBlank()) return null
+
+        val serverHost = sessionPrefs.getString(
+            KEY_SERVER_HOST,
+            ChatClientService.AUTO_SERVER_HOST
+        ) ?: ChatClientService.AUTO_SERVER_HOST
+        val serverPort = ChatDefaults.normalizeServerPort(
+            sessionPrefs.getInt(
+                KEY_SERVER_PORT,
+                ChatDefaults.DEFAULT_SERVER_PORT
+            )
+        )
+
+        return AppSettings(
+            userId = sessionPrefs.getString(KEY_USER_ID, null).orEmpty(),
+            nickname = nickname,
+            isHost = sessionPrefs.getBoolean(KEY_IS_HOST, false),
+            serverHost = serverHost,
+            serverPort = serverPort
+        )
+    }
+
     private fun clearPersistedSession() {
-        sessionPrefs.edit().clear().apply()
+        sessionPrefs.edit()
+            .putBoolean(KEY_SESSION_ACTIVE, false)
+            .apply()
     }
 
     companion object {

@@ -1,7 +1,6 @@
 package com.flightchat.ui
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -49,46 +48,30 @@ fun ChatScreen(
         // 顶部状态栏
         ChatTopBar(
             isConnected = isConnected,
-            onlineUserCount = users.count { it.isOnline },
+            onlineUsers = users.filter { it.isOnline },
             onLeaveRoom = onLeaveRoom,
             modifier = Modifier.fillMaxWidth()
         )
         
         Divider()
         
-        // 消息列表和在线用户
-        Row(
+        // 消息列表
+        LazyColumn(
+            state = messageListState,
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f)
+                .padding(8.dp)
         ) {
-            // 消息区
-            LazyColumn(
-                state = messageListState,
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxHeight()
-                    .padding(8.dp)
-            ) {
-                items(messages) { message ->
-                    ChatMessageBubble(
-                        message = message,
-                        isFromCurrentUser = message.from == currentUserId,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 4.dp)
-                    )
-                }
+            items(messages) { message ->
+                ChatMessageBubble(
+                    message = message,
+                    isFromCurrentUser = message.from == currentUserId,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp)
+                )
             }
-            
-            // 在线用户列表
-            UserListPanel(
-                users = users.filter { it.isOnline },
-                modifier = Modifier
-                    .width(120.dp)
-                    .fillMaxHeight()
-                    .background(Color(0xFFF5F5F5))
-            )
         }
         
         Divider()
@@ -111,10 +94,19 @@ fun ChatScreen(
 @Composable
 fun ChatTopBar(
     isConnected: Boolean,
-    onlineUserCount: Int,
+    onlineUsers: List<User>,
     onLeaveRoom: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    var showOnlineUsers by remember { mutableStateOf(false) }
+
+    if (showOnlineUsers) {
+        OnlineUsersDialog(
+            users = onlineUsers,
+            onDismiss = { showOnlineUsers = false }
+        )
+    }
+
     Row(
         modifier = modifier
             .padding(horizontal = 16.dp, vertical = 12.dp),
@@ -148,11 +140,17 @@ fun ChatTopBar(
                 color = if (isConnected) Color.Green else Color.Red
             )
             
-            Text(
-                text = "在线: $onlineUserCount",
-                fontSize = 12.sp,
-                color = Color.Gray
-            )
+            TextButton(
+                onClick = { showOnlineUsers = true },
+                modifier = Modifier.height(36.dp),
+                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
+            ) {
+                Text(
+                    text = "在线: ${onlineUsers.size}",
+                    fontSize = 12.sp,
+                    color = Color.Gray
+                )
+            }
 
             TextButton(
                 onClick = onLeaveRoom,
@@ -214,46 +212,67 @@ fun ChatMessageBubble(
 }
 
 @Composable
-fun UserListPanel(
+fun OnlineUsersDialog(
     users: List<User>,
-    modifier: Modifier = Modifier
+    onDismiss: () -> Unit
 ) {
-    Column(
-        modifier = modifier
-            .border(1.dp, Color(0xFFDDDDDD))
-            .padding(8.dp)
-    ) {
-        Text(
-            text = "在线用户",
-            fontSize = 12.sp,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(bottom = 8.dp)
-        )
-        
-        LazyColumn {
-            items(users) { user ->
-                Row(
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = "在线用户",
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            if (users.isEmpty()) {
+                Text(
+                    text = "暂无在线用户",
+                    fontSize = 14.sp,
+                    color = Color.Gray
+                )
+            } else {
+                LazyColumn(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(4.dp)
-                        .background(Color.White, RoundedCornerShape(4.dp))
-                        .padding(4.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                        .heightIn(max = 320.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .size(6.dp)
-                            .background(Color.Green, RoundedCornerShape(50))
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(
-                        text = user.nickname,
-                        fontSize = 10.sp,
-                        maxLines = 1
-                    )
+                    items(users) { user ->
+                        OnlineUserRow(user = user)
+                    }
                 }
             }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("关闭")
+            }
         }
+    )
+}
+
+@Composable
+fun OnlineUserRow(user: User) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color(0xFFF5F5F5), RoundedCornerShape(6.dp))
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(8.dp)
+                .background(Color.Green, RoundedCornerShape(50))
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(
+            text = user.nickname,
+            fontSize = 14.sp,
+            maxLines = 1
+        )
     }
 }
 
