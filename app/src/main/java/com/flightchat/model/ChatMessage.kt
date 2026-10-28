@@ -1,5 +1,6 @@
 package com.flightchat.model
 
+import androidx.room.Index
 import androidx.room.Entity
 import androidx.room.PrimaryKey
 import com.google.gson.annotations.SerializedName
@@ -7,7 +8,7 @@ import com.google.gson.annotations.SerializedName
 /**
  * 聊天消息数据模型
  */
-@Entity(tableName = "messages")
+@Entity(tableName = "messages", indices = [Index(value = ["messageId"], unique = true)])
 data class ChatMessage(
     @PrimaryKey(autoGenerate = true)
     val id: Long = 0,
@@ -31,5 +32,11 @@ data class ChatMessage(
     val timestamp: Long = System.currentTimeMillis(),
     
     @SerializedName("type")
-    val type: String = "MESSAGE" // MESSAGE, USER_JOIN, USER_LEAVE, USER_PRESENT
+    val type: String = "MESSAGE",
+    val replyToId: String = "",
+    val replyNickname: String = "",
+    val replyPreview: String = "",
+    val imageId: String = "",
+    val deliveryState: String = "SENT"
+
 )

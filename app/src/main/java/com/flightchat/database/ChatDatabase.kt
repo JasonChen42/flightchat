@@ -12,7 +12,7 @@ import com.flightchat.model.User
 
 @Database(
     entities = [ChatMessage::class, User::class, AppSettings::class],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class ChatDatabase : RoomDatabase() {
@@ -32,10 +32,23 @@ abstract class ChatDatabase : RoomDatabase() {
                     ChatDatabase::class.java,
                     "flightchat_db"
                 )
-                    .addMigrations(MIGRATION_1_2)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                     .build().also {
                     instance = it
                 }
+            }
+        }
+
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Legacy records without a network ID receive a persistent local ID.
+                db.execSQL("UPDATE messages SET messageId = 'legacy_' || lower(hex(randomblob(16))) WHERE messageId IS NULL OR messageId = ''")
+                db.execSQL("DELETE FROM messages WHERE id NOT IN (SELECT MIN(id) FROM messages GROUP BY messageId)")
+                db.execSQL("CREATE UNIQUE INDEX index_messages_messageId ON messages(messageId)")
+                for (column in listOf("replyToId", "replyNickname", "replyPreview", "imageId")) {
+                    db.execSQL("ALTER TABLE messages ADD COLUMN $column TEXT NOT NULL DEFAULT ''")
+                }
+                db.execSQL("ALTER TABLE messages ADD COLUMN deliveryState TEXT NOT NULL DEFAULT 'SENT'")
             }
         }
 

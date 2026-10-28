@@ -55,4 +55,19 @@ class MessageProtocolTest {
         assertEquals("Carol", message.nickname)
         assertEquals("all", message.to)
     }
+    @Test
+    fun legacyMessagesHaveSafeAttachmentDefaults() {
+        val decoded = MessageProtocol.decodeMessage("""{"messageId":"old","from":"u","to":"all","nickname":"N","content":"Hello","timestamp":1,"type":"MESSAGE"}""")!!
+        assertEquals("", decoded.replyToId)
+        assertEquals("", decoded.imageId)
+        assertEquals("SENT", decoded.deliveryState)
+    }
+
+    @Test
+    fun syncPagePreservesQuotesImagesAndCursor() {
+        val message = ChatMessage(messageId = "photo", replyToId = "original", replyNickname = "Alice",
+            replyPreview = "quoted", imageId = "abc", type = "IMAGE")
+        val frame = SyncFrame("SYNC_PAGE", serverId = "host", cursor = 123, messages = listOf(message))
+        assertEquals(frame, SyncProtocol.decode(SyncProtocol.encode(frame)))
+    }
 }

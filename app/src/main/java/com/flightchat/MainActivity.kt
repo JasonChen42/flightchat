@@ -117,6 +117,7 @@ class MainActivity : ComponentActivity() {
                 )
             }
             
+            var historyLimit by remember { mutableStateOf(100) }
             var messages by remember { mutableStateOf(emptyList<com.flightchat.model.ChatMessage>()) }
             var users by remember { mutableStateOf(emptyList<User>()) }
             var currentScreen by remember {
@@ -166,8 +167,8 @@ class MainActivity : ComponentActivity() {
             }
             
             // 收集消息
-            LaunchedEffect(Unit) {
-                database.chatMessageDao().getAllMessages().collect { msgs ->
+            LaunchedEffect(historyLimit) {
+                database.chatMessageDao().getAllMessages(historyLimit).collect { msgs ->
                     messages = msgs
                 }
             }
@@ -318,11 +319,13 @@ class MainActivity : ComponentActivity() {
                         ChatScreen(
                             messages = messages,
                             users = users,
-                            onSendMessage = { content ->
+                            onRetry = { clientService?.retryPending() },
+                            onHistoryLimit = { historyLimit = maxOf(historyLimit, it) },
+                            onSendMessage = { content, reply, imageId ->
                                 if (appState.isHost) {
-                                    serverService?.sendHostMessage(content)
+                                    serverService?.sendHostMessage(content, reply = reply, imageId = imageId)
                                 } else {
-                                    clientService?.sendMessage(content)
+                                    clientService?.sendMessage(content, reply = reply, imageId = imageId)
                                 }
                             },
                             onLeaveRoom = {

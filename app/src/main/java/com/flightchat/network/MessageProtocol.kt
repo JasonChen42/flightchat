@@ -1,6 +1,7 @@
 package com.flightchat.network
 
 import com.google.gson.Gson
+import java.util.UUID
 import com.flightchat.model.ChatMessage
 
 /**
@@ -15,7 +16,11 @@ object MessageProtocol {
     
     fun decodeMessage(json: String): ChatMessage? {
         return try {
-            gson.fromJson(json.trim(), ChatMessage::class.java)
+            gson.fromJson(json.trim(), ChatMessage::class.java)?.let { message ->
+                message.copy(replyToId = message.replyToId ?: "", replyNickname = message.replyNickname ?: "",
+                    replyPreview = message.replyPreview ?: "", imageId = message.imageId ?: "",
+                    deliveryState = message.deliveryState ?: "SENT")
+            }
         } catch (e: Exception) {
             e.printStackTrace()
             null
@@ -24,7 +29,7 @@ object MessageProtocol {
     
     fun createUserJoinMessage(userId: String, nickname: String): ChatMessage {
         return ChatMessage(
-            messageId = "${System.currentTimeMillis()}_join",
+            messageId = UUID.randomUUID().toString(),
             from = userId,
             to = "all",
             nickname = nickname,
@@ -35,7 +40,7 @@ object MessageProtocol {
 
     fun createUserPresenceMessage(userId: String, nickname: String): ChatMessage {
         return ChatMessage(
-            messageId = "${System.currentTimeMillis()}_present",
+            messageId = UUID.randomUUID().toString(),
             from = userId,
             to = "all",
             nickname = nickname,
@@ -46,7 +51,7 @@ object MessageProtocol {
     
     fun createUserLeaveMessage(userId: String, nickname: String): ChatMessage {
         return ChatMessage(
-            messageId = "${System.currentTimeMillis()}_leave",
+            messageId = UUID.randomUUID().toString(),
             from = userId,
             to = "all",
             nickname = nickname,
@@ -62,7 +67,7 @@ object MessageProtocol {
         to: String = "all"
     ): ChatMessage {
         return ChatMessage(
-            messageId = "${System.currentTimeMillis()}_msg_${(Math.random() * 10000).toInt()}",
+            messageId = UUID.randomUUID().toString(),
             from = userId,
             to = to,
             nickname = nickname,

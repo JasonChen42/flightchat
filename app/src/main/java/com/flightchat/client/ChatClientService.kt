@@ -15,6 +15,12 @@ import com.flightchat.model.ChatMessage
 import com.flightchat.model.User
 import com.flightchat.network.ChatDefaults
 import com.flightchat.network.MessageProtocol
+import com.flightchat.network.SyncProtocol
+import com.flightchat.network.SyncFrame
+import com.flightchat.network.ImageStore
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import androidx.room.withTransaction
 import com.flightchat.notification.ChatNotificationManager
 import kotlinx.coroutines.*
 import java.io.*
@@ -31,7 +37,7 @@ import java.util.concurrent.TimeoutException
 class ChatClientService : Service() {
     
     private val TAG = "ChatClientService"
-    private val scope = CoroutineScope(Dispatchers.IO + Job())
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val binder = LocalBinder()
     private val database by lazy { ChatDatabase.getInstance(this) }
     private val keepAlive by lazy { BackgroundKeepAlive(this, TAG) }
@@ -42,7 +48,16 @@ class ChatClientService : Service() {
     private var socket: Socket? = null
     private var reader: BufferedReader? = null
     private var writer: PrintWriter? = null
-    private var isConnected = false
+    @Volatile private var isConnected = false
+    @Volatile private var syncServerId = ""
+    @Volatile private var mediaPort = 0
+    @Volatile private var mediaToken = ""
+    private val transferMutex = Mutex()
+    private val downloadMutex = Mutex()
+    private var outboxJob: Job? = null
+    private var downloadJob: Job? = null
+    private val writeLock = Any()
+    private var maintenanceJob: Job? = null
     private var connectionJob: Job? = null
     
     private var userId: String = ""
@@ -125,7 +140,7 @@ class ChatClientService : Service() {
 
         Log.d(TAG, "Connected, sending user info")
 
-        val userMsg = MessageProtocol.createUserJoinMessage(userId, nickname)
+        val userMsg = MessageProtocol.createUserJoinMessage(userId, nickname).copy(replyPreview = SyncProtocol.CAPABILITY)
         val encoded = MessageProtocol.encodeMessage(userMsg)
         writer?.println(encoded)
         writer?.flush()
@@ -141,14 +156,30 @@ class ChatClientService : Service() {
 
         isConnected = true
         connectionCallback?.invoke(true)
+        connectedSocket.soTimeout = 45000
+        maintenanceJob = scope.launch {
+            while (isActive && isConnected) {
+                delay(10000)
+                if (syncServerId.isNotBlank()) {
+                    sendFrame(SyncFrame("PING"))
+                    requestSync()
+                    retryPending()
+                }
+            }
+        }
 
         while (currentCoroutineContext().isActive) {
             val line = reader?.readLine() ?: break
             if (line.isNotEmpty()) {
+                val control = SyncProtocol.decode(line)
+                if (control != null) {
+                    handleControl(control)
+                    continue
+                }
                 val message = MessageProtocol.decodeMessage(line)
                 if (message != null) {
                     Log.d(TAG, "Received: ${message.content}")
-                    persistIncomingMessage(message)
+                    persistIncomingMessage(message.copy(id = 0, deliveryState = "SENT"))
                     messageCallback?.invoke(message)
                 }
             }
@@ -336,26 +367,90 @@ class ChatClientService : Service() {
     /**
      * 发送消息
      */
-    fun sendMessage(content: String, to: String = "all") {
-        if (content.isBlank()) return
+    fun sendMessage(content: String, to: String = "all", reply: ChatMessage? = null, imageId: String = "") {
+        if (content.isBlank() && imageId.isBlank()) return
         scope.launch {
-            try {
-                val activeWriter = writer
-                if (!isConnected || activeWriter == null) {
-                    connectionCallback?.invoke(false)
-                    return@launch
+            val message = MessageProtocol.createChatMessage(userId, nickname, content, to).copy(
+                replyToId = reply?.messageId.orEmpty(), replyNickname = reply?.nickname.orEmpty(),
+                replyPreview = reply?.let { if (it.type == "IMAGE") "[图片] ${it.content}" else it.content.take(160) }.orEmpty(),
+                imageId = imageId, type = if (imageId.isBlank()) "MESSAGE" else "IMAGE", deliveryState = "PENDING"
+            )
+            database.chatMessageDao().insert(message)
+            if (imageId.isBlank() && isConnected && syncServerId.isNotBlank()) {
+                runCatching { sendLine(MessageProtocol.encodeMessage(message.copy(id = 0, deliveryState = "SENT"))) }
+            }
+            retryPending()
+        }
+    }
+
+    @Synchronized
+    fun retryPending() {
+        if (outboxJob?.isActive != true) outboxJob = scope.launch { flushOutbox() }
+        if (downloadJob?.isActive != true) downloadJob = scope.launch { downloadImages() }
+    }
+
+    private fun sendLine(line: String) = synchronized(writeLock) {
+        val active = writer ?: throw IOException("Disconnected")
+        active.println(line)
+        if (active.checkError()) {
+            socket?.close()
+            throw IOException("Send failed")
+        }
+    }
+    private fun sendFrame(frame: SyncFrame) = sendLine(SyncProtocol.encode(frame))
+    private fun requestSync() {
+        sendFrame(SyncFrame("SYNC_REQUEST", serverId = syncServerId,
+            cursor = preferences.getLong("cursor_$syncServerId", 0)))
+    }
+    private suspend fun handleControl(frame: SyncFrame) {
+        when (frame.type) {
+            "HELLO" -> {
+                syncServerId = frame.serverId
+                mediaPort = frame.mediaPort
+                mediaToken = frame.token
+                requestSync()
+                retryPending()
+            }
+            "SYNC_PAGE" -> {
+                if (frame.serverId != syncServerId) return
+                database.withTransaction {
+                    frame.messages.forEach { message ->
+                        database.chatMessageDao().insert(message.copy(id = 0, deliveryState = "SENT"))
+                        database.chatMessageDao().acknowledge(message.messageId)
+                    }
                 }
-                val message = MessageProtocol.createChatMessage(userId, nickname, content, to)
-                val encoded = MessageProtocol.encodeMessage(message)
-                database.chatMessageDao().insert(message)
-                activeWriter.println(encoded)
-                activeWriter.flush()
-            } catch (e: Exception) {
-                Log.e(TAG, "Send error: ${e.message}")
+                // Commit only after every message in the page is durable. Live arrivals never advance this cursor.
+                preferences.edit().putLong("cursor_$syncServerId", frame.cursor).commit()
+            }
+            "SYNC_END" -> {
+                if (frame.serverId != syncServerId) return
+                preferences.edit().putLong("cursor_$syncServerId", frame.cursor).commit()
+                retryPending()
+            }
+            "ACK" -> database.chatMessageDao().acknowledge(frame.messageId)
+        }
+    }
+    private suspend fun flushOutbox() = transferMutex.withLock {
+        if (!isConnected || syncServerId.isBlank()) return@withLock
+        for (message in database.chatMessageDao().pending(userId)) {
+            try {
+                if (message.imageId.isNotBlank()) {
+                    ImageStore.transfer(this, serverHost, mediaPort, mediaToken, message.imageId, true)
+                }
+                sendLine(MessageProtocol.encodeMessage(message.copy(id = 0, deliveryState = "SENT")))
+            } catch (e: Exception) { Log.w(TAG, "Message will retry: ${e.message}"); break }
+        }
+    }
+    private suspend fun downloadImages() = downloadMutex.withLock {
+        if (!isConnected || mediaPort == 0) return@withLock
+        for (id in database.chatMessageDao().imageIds()) {
+            if (!ImageStore.exists(this, id)) {
+                runCatching { ImageStore.transfer(this, serverHost, mediaPort, mediaToken, id, false) }
+                    .onFailure { Log.w(TAG, "Image will retry: ${it.message}") }
             }
         }
     }
-    
+
     /**
      * 设置消息回调
      */
@@ -377,6 +472,14 @@ class ChatClientService : Service() {
     }
 
     private suspend fun persistIncomingMessage(message: ChatMessage) {
+        if (database.chatMessageDao().find(message.messageId) != null) {
+            database.chatMessageDao().acknowledge(message.messageId)
+            return
+        }
+        if (message.imageId.isNotBlank()) scope.launch {
+            delay(100)
+            retryPending()
+        }
         when (message.type) {
             "USER_JOIN" -> {
                 database.userDao().insert(
@@ -424,10 +527,15 @@ class ChatClientService : Service() {
      */
     fun disconnect() {
         try {
-            sendLeaveMessageIfNeeded()
+            outboxJob?.cancel()
+            downloadJob?.cancel()
+            maintenanceJob?.cancel()
+            maintenanceJob = null
+            syncServerId = ""
+            mediaPort = 0
+            socket?.close()
             writer?.close()
             reader?.close()
-            socket?.close()
             socket = null
             reader = null
             writer = null
